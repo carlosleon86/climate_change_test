@@ -1,0 +1,335 @@
+---
+title: "Support Consulting in Research and Data Analysis in Air Transport, Logistics and Private Public Partnerships, for the Transport Division (code and outputs w/some comments)"
+author: "Carlos R. Leon-Gomez"
+date: "2/10/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+## Introduction
+
+This is a brief report that shows the code used and the main results using R Markdown (Rmd). If you only want to see the code for the test in R-script, you can download it from [here](https://github.com/carlosleong/climate_change_test/blob/main/Code_testPEC_R-script_CLeon.R).  
+
+
+In case you also want to see the code that is generating this document and executing the code at the same time (i.e. Rmd file), you can download it from [here](https://github.com/carlosleong/climate_change_test/blob/main/Code_testPEC_RMD-script_CLeon.Rmd) too. 
+
+## Data Managment
+
+First, we clean our environment and upload/install the packages that will help us with the analysis: 
+
+```{r message=FALSE}
+rm(list = ls())
+
+list.of.packages <- c("readr", "tidyverse", "regclass",
+                      "huxtable", "jtools","stats","olsrr",
+                      "glmnet", "knitr")
+
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages, repos = "http://cran.us.r-project.org")
+
+invisible(lapply(list.of.packages, library, character.only = TRUE))
+```
+
+Then, we get the data into the environment (the file has been uploaded to my Github account, so there's no need for setting a working directory that matches the file).
+
+```{r }
+data="https://raw.githubusercontent.com/carlosleong/climate_change_test/main/climate_change.csv"
+data<-read_csv(url(data))
+```
+
+A first glimpse into the data
+
+```{r }
+kable(data[1:3,])
+```
+
+We need to recode the variable's names because the hyphen in CF-11 and CF-12 will cause problems. We substitute it with an underscore character (the hyphen is sometimes misled by the minus sign).
+
+``` {r }
+for (i in 1:length(names(data))){
+aux <- names(data[,i])
+names(data)[i] <- gsub("-", "_", aux)
+}
+```
+
+Checking the new names
+
+```{r }
+
+names(data)
+
+```
+
+Next, I set up which are the covariates within the database, and split the data into a training and test set.
+
+```{r }
+Covariates <- setdiff(names(data), c("Temp", "Year", "Month"))
+
+data_train <- data[data$Year<=2006,] 
+data_test <-  data[data$Year>2006,] 
+
+```
+
+## Linear Model
+Before starting with the analysis, we should be aware of few things. First, we are dealing with a time-series dataset. In this regard, assumptions that are easily held with a cross-sectional dataset are more likely to be violated. For instance, covariates are hardly exogenous in the presence of a common-trend or seasonality, or the error cannot be considered as random in the presence of dynamic components (e.g. lags of the outcome variable). In fact, the very nature of some of the series -stock variables- gives us a clue about the type of problem we will face in the case we want to establish causality from the covariates to the outcome variable. However, as the scope of this exercise is just performance in forecasting, we should not be very worried about this, although we will be very limited for interpreting particular effects. 
+
+Now is time for the first model specification.
+
+```{r }
+f1 <- as.formula(paste("Temp", paste(Covariates, 
+                  collapse = ' + '), sep = " ~ "))
+f1
+```
+
+The results are below: 
+```{r }
+linear_1 <- lm(f1, data_train)
+summary(linear_1)
+```
+
+All the variables, with exception of CH4, seem to be relevant in our model - with **p values < 0.05** in most of the cases. However, not all of the covariates resulted in the right sign. For instance, N2O and CFC_11 which are gases harmful to the environment have a negative sign. This is problematic because it can mislead the audience to believe that such gases are not harmful. However, as we are not establishing causality, we are looking for fitting a nice model that predicts correctly our outcome variable. This seems to be the case. The covariates explain around 75% of the variance of the temperature, and the model as a whole is as well relevant in explaining the temperature- with a very high **F-statistics**.
+
+Next, I compute the bivariate correlation between N2O and CFC_11 with the other covariates below:
+
+```{r }
+aux <- c("N2O", "CFC_11") 
+corr_matrix <- cor(data_train) %>%
+               subset(,c(aux,setdiff(Covariates,aux))) 
+corr_matrix <- corr_matrix[aux,]
+round(corr_matrix,2)
+```
+From the table above, t is straightforward to see that N2O is highly correlated with CO2, CH4, and CFC_12. Meanwhile CFC_11 is highly correlated with CFC_12 (correlations above 0.80). As noted before, these highs correlations can be causing the flip on the sign. In fact, sign-flipping could be a symptom of endogeneity caused by omitted variable bias - as the common trend between variables confound effects.
+
+Just for curiosity, we can check how much of the variability of Temp, N2O, and CFC_11 can be explained for a simple model with just the years as covariates. This is done below. I don't present all the estimated coefficients for the years because this is not a formal test. What is important here is to observe that the **R-square** is abnormally high in the three specifications, which suggests a common trend and the huge influence of the temporal component on at least those three variables.   
+
+```{r }
+data_train$year_f <- as.factor(data_train$Year)
+data_train$month_f <- as.factor(data_train$Month)
+aux <- c("Temp", "N2O", "CFC_11")
+
+for (i in 1:length(aux)){
+ assign(paste("lm_aux",i,sep = ""),
+        lm(get(aux[i]) ~ year_f , data = data_train))  
+}
+
+```
+
+```{r echo=TRUE}
+export_summs(lm_aux1, lm_aux2, lm_aux3, model.names = c("Temp","N2O","CFC_11"), coefs = c("(Intercept)", "year_f2003", "year_f2004", "year_f2005", "year_f2006") ,error_pos = "below")
+
+```
+\newpage
+
+## Simplyfing the linear model for prediction
+
+There are several ways to simplify a model for prediction analysis. The first and simplest one is getting rid of redundant variables. As some of the covariates are highly correlated, we can guess that they are not providing a lot of new information to the model. We will use the **R square** to evaluate the different specifications within 4 different frameworks of analysis: two concerning **Subset Selection**, and the last two with **Shrinkage Methods**.  
+
+First, I prepare a matrix where I'll storage the results of the models for the training (**ante**) and test (**post**) data
+
+```{r }
+WINNERS <- as.data.frame(matrix(data = NA, nrow = 4, ncol = 6))
+colnames(WINNERS) <- c("Method","Specification", "AIC-ante", "R2-ante", "R2adj-ante",
+                       "R2-post")
+
+WINNERS[1,1] <- "Best Subset"
+WINNERS[2,1] <- "Forward Stepwise"
+WINNERS[3,1] <- "Ridge"
+WINNERS[4,1] <- "Lasso"
+```
+
+I will create some easy functions that allow me to compute the statistics that will be used as criteria, for those cases in which the program doesn't provide that information (e.g. **R.sq.**, **Adj-R.sq.** and **Predict-R.sq.**).
+
+```{r }
+#R2
+R2 <- function(true, predicted){
+  SSE <- sum((predicted-true)^2)
+  SST <- sum((true-mean(true))^2)
+  R2 <- 1 - (SSE/SST)
+  return(R2)
+}
+
+#R2adj
+R2adj <- function(R2, N, k){
+  R2adj <- 1 - ((1-R2)*(N-1)/(N-k-1))
+  return(R2adj)
+} 
+
+#R2-predicted
+predict_R2 <- function(true_train, true_test, predicted){
+  SSE <- sum((predicted-true_test)^2)
+  SST <- sum((true_test-mean(true_train))^2)
+  predict_R2 <- 1 - (SSE/SST)
+  return(predict_R2)
+}
+```
+
+### Best subset selection
+
+The first framework is implemented below, and it follows the algorithm proposed by James, G. et al (2013). The method consists of checking for all the possible combinations between covariates beginning with the case of no covariates at all (i.e. only the intercept), and picking the most preferred specification according to a criteria (e.g. AIC, R2, etc.). Although this method is the most complete one, it is computationally demanding for a large set of covariates. For instance, the number of regressions to be evaluated rises up to $2^p$ (for our case, with p=8 covariates, I evaluate 256 different regressions).   
+```{r }
+#########
+#Method 1: Best subset selection 
+#########
+
+# This section implements the algorithm proposed by:
+# James, G.; Witten, D.; Hastie, T.; and Tibshirani, R. (2013) in their textbook
+# An Introduction to Statistical Learning, Edited by Springers
+
+# Algorithm 6.1 (pp. 205)
+model_winnerset <- as.data.frame(matrix(data = 0, nrow = length(Covariates)+1, ncol = 4))
+colnames(model_winnerset) <- c("Specification", "AIC","R2", "R2adj")
+
+#Step 1
+model_winnerset[1,1] <- "Temp~1"
+aux <- lm(Temp~1, data_train)    
+model_winnerset[1,2] <- AIC(aux)
+aux <- summary(aux)
+model_winnerset[1,3] <- aux[["r.squared"]]
+model_winnerset[1,4] <- aux[["adj.r.squared"]]
+
+#Step 2
+for (i in 1:length(Covariates)){
+  aux <- combn(1:length(Covariates),i, simplify = TRUE)
+  model_contestant <- as.data.frame(matrix(data = 0, nrow = ncol(aux), ncol = 4))
+for (j in 1:ncol(aux)){
+    model <- aux[,j]
+    model <- Covariates[model]
+    model <- paste("Temp", paste(model,collapse = ' + '), sep = " ~ ")
+    model_contestant[j,1] <- model
+    model <- lm(as.formula(model), data_train)
+    model_contestant[j,2] <- AIC(model)
+    model <- summary(model)
+    model_contestant[j,3] <- model[["r.squared"]]
+    model_contestant[j,4] <- model[["adj.r.squared"]]
+}
+    max_r2 <- max(model_contestant[,3])
+    max_r2 <- grep(max_r2, model_contestant[,3])
+    model_winnerset[i+1,] <-  model_contestant[max_r2,]
+}
+
+#Step 3
+    min_AIC <- min(model_winnerset[,2])
+    min_AIC <- grep(min_AIC, model_winnerset[,2])
+    WINNERS[1,2] <- model_winnerset[min_AIC,1]
+    WINNERS[1,3] <- round(model_winnerset[min_AIC,2],2)
+    WINNERS[1,4] <- model_winnerset[min_AIC,3]
+    WINNERS[1,5] <- model_winnerset[min_AIC,4]
+    
+#Prediction (test data)
+best_subs_model <- lm(as.formula(WINNERS[1,2]),data = data_train)
+best_subs_model_predict <- predict(best_subs_model, newdata=data_test)
+
+WINNERS[1,6] <- predict_R2(data_train$Temp,data_test$Temp, best_subs_model_predict)  
+
+```
+
+### Forward stepwise selection
+The second method is less computationally demanding than the last one which is the reason for its popularity. In particular, the forward stepwise selection starts with a specification with only one variable (again the intercept), and then it adds one variable at a time (whichever is the most relevant to the model at that step). This is way the variables are ranked into the equation in order of importance, with the less valuable variables at the end (or not being part of the model at all in the case of don't be able to provide valuable information to the model).
+
+```{r }
+#########
+#Method 2: Forward stepwise selection 
+#########
+fwd_stepmod  <- lm(f1, data = data_train)
+fwd_stepmod  <- ols_step_forward_p(fwd_stepmod)
+fwd_stepmod  <- fwd_stepmod[["predictors"]]
+fwd_stepmod  <- paste("Temp", paste(fwd_stepmod,collapse = ' + '), sep = " ~ ")
+WINNERS[2,2] <- fwd_stepmod
+fwd_stepmod  <- lm(as.formula(fwd_stepmod), data = data_train)
+WINNERS[2,3] <- round(AIC(fwd_stepmod),2)
+fwd_stepmod  <- summary(fwd_stepmod)    
+WINNERS[2,4] <- fwd_stepmod[["r.squared"]] 
+WINNERS[2,5] <- fwd_stepmod[["adj.r.squared"]]   
+   
+
+#Prediction (test data)
+fwd_stepmod <- lm(as.formula(WINNERS[2,2]),data = data_train)
+fwd_stepmod_predict <- predict(fwd_stepmod, newdata=data_test)
+
+WINNERS[2,6] <- predict_R2(data_train$Temp,data_test$Temp, fwd_stepmod_predict)    
+
+
+```
+
+### Ridge Regression
+Although shrinkage methods are not a way to deal with the parsimony of a model (because they use all the covariates), they are very popular in Machine Learning due to improving the predictability of a model in some cases. Both methods, Ridge and Lasso, penalize those covariates which have a great deal of variance shrinking them towards zero in accord with a penalization factor named lambda. In the first step, we find the optimal lambda, and then measure the goodness of fit of the model on the training dataset (**ante**), and the test dataset (**post**)
+
+```{r }
+#########
+#Method 3: Ridge Regression 
+#########
+
+# Step 1: find optimal lambda
+ridge_model <- glmnet(as.matrix(data_train[Covariates]), data_train$Temp,
+                      family="gaussian", alpha = 0)
+
+opt_lambda_ridge <- min(ridge_model[["lambda"]])
+
+# Step 2: Estimate the training model
+predict_ridge_train <- predict(ridge_model, s = opt_lambda_ridge, 
+                             newx = as.matrix(data_train[Covariates]))
+
+# Storing results
+WINNERS[3,2] <- "All covariates included"
+WINNERS[3,3] <- "NA"
+WINNERS[3,4] <- R2(data_train$Temp, predict_ridge_train)
+WINNERS[3,5] <- R2adj(WINNERS[3,4], nrow(data_train), length(Covariates)+1)
+
+#Prediction (test data)
+predict_ridge_test <- predict(ridge_model, s = opt_lambda_ridge, 
+                              newx = as.matrix(data_test[Covariates]))
+
+WINNERS[3,6] <- predict_R2(data_train$Temp,data_test$Temp, predict_ridge_test)    
+```
+
+### Lasso Regression
+The Lasso regression is similar in fashion to the Ridge regression, although it includes an additional term that increases the penalization towards zero and in some cases makes it similar to **Best subset selection**. 
+
+```{r }
+#########
+#Method 4: Lasso Regression 
+#########
+
+# Step 1: find optimal lambda
+lasso_model <- glmnet(as.matrix(data_train[Covariates]), data_train$Temp,
+                      family="gaussian", alpha = 1)
+opt_lambda_lasso <- min(lasso_model[["lambda"]])
+
+# Step 2: Estimate the training model
+predict_lasso_train <- predict(lasso_model, s = opt_lambda_lasso, 
+                              newx = as.matrix(data_train[Covariates]))
+
+# Storing results
+WINNERS[4,2] <- "All covariates included"
+WINNERS[4,3] <- "NA"
+WINNERS[4,4] <- R2(data_train$Temp, predict_lasso_train)
+WINNERS[4,5] <- R2adj(WINNERS[4,4], nrow(data_train), length(Covariates)+1)
+
+#Prediction (test data)
+predict_lasso_test <- predict(lasso_model, s = opt_lambda_lasso, 
+                              newx = as.matrix(data_test[Covariates]))
+
+WINNERS[4,6] <- predict_R2(data_train$Temp,data_test$Temp, predict_lasso_test)    
+
+```
+
+
+## Performance of the models
+
+Below, we can see the four methods results. First, it is noteworthy to see that both **Subset Selection Methods** lead us to the same results, that is, they only dropped the variable CH4. However, as we discussed before, the algorithm used is very different. In particular, we can see in the **Forward Stepwise method** the order of importance of the variables, in terms of the information they provided to the model. In the case of the **Shrinkage Methods**, we can see that while both methods perform similarly **ex-ante** (i.e. with the training data), this is not true for the **ex-post** data (test data). Lasso regressions provide similar performance to **Subset Selection Methods** with the great advantage of don't exclude any variable explicitly from the model's specification, which is not a minor feature in the case of omitted variable concerns, or when the theory has established the importance of a particular variable in explaining a relationship.    
+
+
+```{r }
+kable(WINNERS[1:4,], digits=2)
+```
+
+
